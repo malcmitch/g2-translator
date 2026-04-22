@@ -4,11 +4,13 @@
   "description": "Even Realities G2 bidirectional translation with proactive Spanish suggestions",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port 3000",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sim": "evenhub-simulator http://localhost:3000",
+    "qr": "evenhub qr --port 3000"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "^0.0.10",
@@ -16,6 +18,8 @@
     "react-dom": "^19.2.5"
   },
   "devDependencies": {
+    "@evenrealities/evenhub-cli": "^0.1.13",
+    "@evenrealities/evenhub-simulator": "^0.7.3",
     "@types/bun": "latest",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
