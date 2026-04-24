@@ -31,17 +31,76 @@ export class AIProcessor {
     if (this.network.isOnline && this.apiKey) {
       try {
         const result = await this.processOnline(spokenSpanish, history)
-        return { ...result, isOffline: false }
+        return { ...result, isOffline: false, sourceUtterance: spokenSpanish }
       } catch (err) {
         console.warn('[AIProcessor] Online call failed, falling back offline:', err)
       }
     }
-    return this.processOffline(spokenSpanish)
+    return { ...this.processOffline(spokenSpanish), sourceUtterance: spokenSpanish }
+  }
+
+  /**
+   * Re-run suggestion generation for the same utterance, explicitly
+   * excluding previously shown suggestions so the user gets fresh options.
+   */
+  async regenerate(
+    spokenSpanish: string,
+    history: ConversationTurn[],
+    excludeSuggestions: string[],
+  ): Promise<PipelineResult> {
+    if (this.network.isOnline && this.apiKey) {
+      try {
+        const result = await this.processOnline(spokenSpanish, history, excludeSuggestions)
+        return { ...result, isOffline: false, sourceUtterance: spokenSpanish }
+      } catch (err) {
+        console.warn('[AIProcessor] Regenerate failed, falling back offline:', err)
+      }
+    }
+    return { ...this.processOffline(spokenSpanish), sourceUtterance: spokenSpanish }
+  }
+
+  /**
+   * Translate an English phrase to natural spoken Spanish.
+   * Used when Malcolm types a reply instead of selecting a suggestion.
+   */
+  async translateToSpanish(englishText: string): Promise<string> {
+    if (!this.network.isOnline || !this.apiKey) {
+      return englishText // fallback: speak the English text as-is
+    }
+
+    const messages: OpenAIMessage[] = [
+      {
+        role: 'system',
+        content: [
+          'Translate the following English phrase to natural, conversational Mexican Spanish.',
+          'Return ONLY the Spanish translation — no quotes, no explanation, no extra text.',
+          'Keep it concise and suitable for spoken conversation.',
+        ].join(' '),
+      },
+      { role: 'user', content: englishText },
+    ]
+
+    const res = await fetch(OPENAI_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'gpt-4o', temperature: 0.3, messages }),
+    })
+
+    if (!res.ok) throw new Error(`OpenAI API error: ${res.status}`)
+    const data = (await res.json()) as OpenAIResponse
+    return data.choices?.[0]?.message?.content?.trim() ?? englishText
   }
 
   // ── Online: GPT-4o ────────────────────────────────────────────────────────
 
-  async processOnline(spokenSpanish: string, history: ConversationTurn[]): Promise<ProcessedResult> {
+  async processOnline(
+    spokenSpanish: string,
+    history: ConversationTurn[],
+    excludeSuggestions: string[] = [],
+  ): Promise<ProcessedResult> {
     const historyContext = history
       .slice(-4)
       .map((t) =>
@@ -57,7 +116,10 @@ export class AIProcessor {
       '{ "translation": "<English, max 12 words>", "suggestions": ["<Spanish 1, max 8 words>", "<Spanish 2, max 8 words>", "<Spanish 3, max 8 words>"] }',
       'Suggestions must be natural, contextually varied, and display-safe (no special chars).',
       'Word limits are strict — text renders on smart glasses lens.',
-    ].join('\n')
+      excludeSuggestions.length > 0
+        ? `Do NOT repeat these previous suggestions: ${excludeSuggestions.map((s) => `"${s}"`).join(', ')}. Generate entirely different options.`
+        : '',
+    ].filter(Boolean).join('\n')
 
     const userPrompt = historyContext
       ? `Conversation so far:\n${historyContext}\n\nThey just said (Spanish): "${spokenSpanish}"`

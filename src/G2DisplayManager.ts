@@ -23,12 +23,24 @@ const CONTAINER_ID = {
   SUGGESTIONS: 2,
 } as const
 
-export type SuggestionSelectHandler = (index: number, suggestionText: string) => void
+// Fixed action items always appended after suggestions
+const ACTION_ITEMS = {
+  REGEN: '↻  More options',
+  TYPE:  '✏  Type reply',
+} as const
+
+export type SuggestionSelectHandler  = (index: number, text: string) => void
+export type RegenerateRequestHandler = () => void
+export type TypeReplyRequestHandler  = () => void
 
 export class G2DisplayManager {
   private bridge: EvenAppBridge
   private initialized = false
   private onSuggestionSelect?: SuggestionSelectHandler
+  private onRegenerateRequest?: RegenerateRequestHandler
+  private onTypeReplyRequest?: TypeReplyRequestHandler
+  /** Tracks how many real suggestions are in the current list */
+  private currentSuggestionCount = 0
 
   constructor(bridge?: EvenAppBridge) {
     this.bridge = bridge ?? EvenAppBridge.getInstance()
@@ -39,8 +51,14 @@ export class G2DisplayManager {
   /**
    * Call once on app start — sets up the lens layout and wires event listeners.
    */
-  async init(onSuggestionSelect?: SuggestionSelectHandler): Promise<void> {
-    this.onSuggestionSelect = onSuggestionSelect
+  async init(
+    onSuggestionSelect?: SuggestionSelectHandler,
+    onRegenerateRequest?: RegenerateRequestHandler,
+    onTypeReplyRequest?: TypeReplyRequestHandler,
+  ): Promise<void> {
+    this.onSuggestionSelect  = onSuggestionSelect
+    this.onRegenerateRequest = onRegenerateRequest
+    this.onTypeReplyRequest  = onTypeReplyRequest
     this.listenForGlassesEvents()
 
     const page = new CreateStartUpPageContainer({
@@ -65,10 +83,10 @@ export class G2DisplayManager {
           height: 120,
           isEventCapture: 1,
           itemContainer: new ListItemContainerProperty({
-            itemCount: 3,
+            itemCount: 2,
             itemWidth: 488,
             isItemSelectBorderEn: 1,
-            itemName: ['', '', ''],
+            itemName: [ACTION_ITEMS.REGEN, ACTION_ITEMS.TYPE],
           }),
         }),
       ],
@@ -93,13 +111,17 @@ export class G2DisplayManager {
     ])
   }
 
-  async setIdle(message = 'Listening…'): Promise<void> {
+  async setStatus(message: string): Promise<void> {
     await this.bridge.textContainerUpgrade(
       new TextContainerUpgrade({
         containerID: CONTAINER_ID.TRANSLATION,
         content: message,
       })
     )
+  }
+
+  async setIdle(message = 'Listening…'): Promise<void> {
+    await this.setStatus(message)
   }
 
   // ── Private helpers ───────────────────────────────────────────────────────
@@ -113,7 +135,13 @@ export class G2DisplayManager {
   }
 
   private async updateSuggestions(suggestions: string[]): Promise<void> {
-    const items = padTo3(suggestions).map((s, i) => (s ? `${i + 1}  ${truncate(s, 26)}` : ''))
+    const capped = suggestions.slice(0, 3)
+    this.currentSuggestionCount = capped.length
+
+    // Suggestion items: "1  text", "2  text", ...
+    const suggestionItems = capped.map((s, i) => `${i + 1}  ${truncate(s, 26)}`)
+    // Always append the two action items
+    const allItems = [...suggestionItems, ACTION_ITEMS.REGEN, ACTION_ITEMS.TYPE]
 
     // List updates require rebuildPageContainer (textContainerUpgrade is text-only)
     await this.bridge.rebuildPageContainer(
@@ -129,10 +157,10 @@ export class G2DisplayManager {
             height: 120,
             isEventCapture: 1,
             itemContainer: new ListItemContainerProperty({
-              itemCount: suggestions.length,
+              itemCount: allItems.length,
               itemWidth: 488,
               isItemSelectBorderEn: 1,
-              itemName: items,
+              itemName: allItems,
             }),
           }),
         ],
@@ -143,8 +171,10 @@ export class G2DisplayManager {
   // ── G2 hardware event listener ────────────────────────────────────────────
 
   /**
-   * Listens to EvenHubEvent from the glasses.
-   * List_ItemEvent.CLICK_EVENT fires when the user selects a suggestion.
+   * Routes tap events from the glasses list:
+   *   index < currentSuggestionCount  →  user wants to use that suggestion
+   *   index === currentSuggestionCount     →  ↻ More options
+   *   index === currentSuggestionCount + 1 →  ✏ Type reply
    */
   private listenForGlassesEvents(): void {
     if (typeof document === 'undefined') return
@@ -160,11 +190,24 @@ export class G2DisplayManager {
           listEvent.eventType === OsEventTypeList.CLICK_EVENT
         ) {
           const index = listEvent.currentSelectItemIndex ?? 0
-          const name = listEvent.currentSelectItemName ?? ''
-          this.onSuggestionSelect?.(index, name)
+          const name  = listEvent.currentSelectItemName ?? ''
+          this.routeTap(index, name)
         }
       }
     })
+  }
+
+  private routeTap(index: number, name: string): void {
+    const regenIndex = this.currentSuggestionCount
+    const typeIndex  = this.currentSuggestionCount + 1
+
+    if (index < this.currentSuggestionCount) {
+      this.onSuggestionSelect?.(index, name)
+    } else if (index === regenIndex) {
+      this.onRegenerateRequest?.()
+    } else if (index === typeIndex) {
+      this.onTypeReplyRequest?.()
+    }
   }
 }
 
