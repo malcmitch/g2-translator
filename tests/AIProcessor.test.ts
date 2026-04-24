@@ -2,8 +2,9 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test'
 import { AIProcessor } from '../src/AIProcessor'
 import { NetworkMonitor } from '../src/NetworkMonitor'
+import type { SuggestionPair } from '../src/types'
 
-// ── Shared mock network ────────────────────────────────────────────────────
+// ── Shared helpers ─────────────────────────────────────────────────────────
 
 function makeNetwork(online: boolean): NetworkMonitor {
   const n = new NetworkMonitor()
@@ -11,35 +12,49 @@ function makeNetwork(online: boolean): NetworkMonitor {
   return n
 }
 
+function makePairs(count = 3): SuggestionPair[] {
+  return Array.from({ length: count }, (_, i) => ({
+    english: `Option ${i + 1}`,
+    spanish: `Opción ${i + 1}`,
+  }))
+}
+
+function mockFetchWith(pairs: SuggestionPair[], translation = 'Test translation') {
+  return mock(async () => ({
+    ok: true,
+    json: async () => ({
+      choices: [{
+        message: {
+          content: JSON.stringify({ translation, suggestions: pairs }),
+        },
+      }],
+    }),
+  })) as any
+}
+
 // ── Online mode ────────────────────────────────────────────────────────────
 
 describe('AIProcessor (online mode)', () => {
   const mockApiKey = 'sk-test-key'
 
-  it('parses valid GPT-4o JSON response correctly', async () => {
-    const mockResponse = {
-      choices: [{
-        message: {
-          content: JSON.stringify({
-            translation: 'Can you sign here please?',
-            suggestions: ['Sí, con gusto', '¿Dónde firmo?', 'Un momento'],
-          }),
-        },
-      }],
-    }
+  it('parses valid GPT-4o JSON response correctly — returns SuggestionPair[]', async () => {
+    const pairs: SuggestionPair[] = [
+      { english: 'Yes, of course',    spanish: 'Sí, con gusto' },
+      { english: 'Where do I sign?',  spanish: '¿Dónde firmo?' },
+      { english: 'One moment',        spanish: 'Un momento' },
+    ]
 
     const originalFetch = globalThis.fetch
-    globalThis.fetch = mock(async () => ({
-      ok: true,
-      json: async () => mockResponse,
-    })) as any
+    globalThis.fetch = mockFetchWith(pairs, 'Can you sign here please?')
 
     const processor = new AIProcessor(mockApiKey, makeNetwork(true))
     const result = await processor.process('¿Puede firmar aquí?', [])
 
     expect(result.translation).toBe('Can you sign here please?')
     expect(result.suggestions).toHaveLength(3)
-    expect(result.suggestions[0]).toBe('Sí, con gusto')
+    expect(result.suggestions[0]).toEqual({ english: 'Yes, of course', spanish: 'Sí, con gusto' })
+    expect(result.suggestions[0].english).toBeTruthy()
+    expect(result.suggestions[0].spanish).toBeTruthy()
     expect(result.isOffline).toBe(false)
 
     globalThis.fetch = originalFetch
@@ -54,6 +69,10 @@ describe('AIProcessor (online mode)', () => {
 
     expect(result.isOffline).toBe(true)
     expect(result.suggestions).toHaveLength(3)
+    result.suggestions.forEach((p) => {
+      expect(p.english).toBeTruthy()
+      expect(p.spanish).toBeTruthy()
+    })
 
     globalThis.fetch = originalFetch
   })
@@ -79,7 +98,10 @@ describe('AIProcessor (online mode)', () => {
       return {
         ok: true,
         json: async () => ({
-          choices: [{ message: { content: JSON.stringify({ translation: 'Hi', suggestions: ['Hola', 'Buenos días', 'Qué tal'] }) } }],
+          choices: [{ message: { content: JSON.stringify({
+            translation: 'Hi',
+            suggestions: makePairs(),
+          }) } }],
         }),
       }
     }) as any
@@ -100,13 +122,16 @@ describe('AIProcessor (online mode)', () => {
 // ── Offline mode ───────────────────────────────────────────────────────────
 
 describe('AIProcessor (offline mode)', () => {
-  it('returns offline result with 3 template suggestions', async () => {
+  it('returns offline result with 3 bilingual pairs', async () => {
     const processor = new AIProcessor('', makeNetwork(false))
     const result = await processor.process('¿Cuánto cuesta esto?', [])
 
     expect(result.isOffline).toBe(true)
     expect(result.suggestions).toHaveLength(3)
-    result.suggestions.forEach((s) => expect(s.length).toBeGreaterThan(0))
+    result.suggestions.forEach((p) => {
+      expect(p.english.length).toBeGreaterThan(0)
+      expect(p.spanish.length).toBeGreaterThan(0)
+    })
   })
 
   it('does not call fetch in offline mode', async () => {
@@ -125,21 +150,24 @@ describe('AIProcessor (offline mode)', () => {
     const processor = new AIProcessor('', makeNetwork(false))
     const result = await processor.process('cuánto cuesta', [])
 
-    expect(result.suggestions.some((s) =>
-      s.includes('Cuánto') || s.includes('acepto') || s.includes('descuento')
-    )).toBe(true)
+    // Price scenario should fire — check English glosess for price-related content
+    const englishGlosses = result.suggestions.map((p) => p.english.toLowerCase())
+    const hasPrice = englishGlosses.some((g) =>
+      g.includes('total') || g.includes('fine') || g.includes('discount') || g.includes('price')
+    )
+    expect(hasPrice).toBe(true)
   })
 })
 
 // ── processOnline unit (direct call) ──────────────────────────────────────
 
 describe('AIProcessor.processOnline', () => {
-  it('throws on invalid JSON response shape', async () => {
+  it('throws when suggestions array is empty after filtering', async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = mock(async () => ({
       ok: true,
       json: async () => ({
-        choices: [{ message: { content: JSON.stringify({ wrong_key: 'oops' }) } }],
+        choices: [{ message: { content: JSON.stringify({ translation: 'Hi', suggestions: [] }) } }],
       }),
     })) as any
 
@@ -158,7 +186,7 @@ describe('AIProcessor.processOnline', () => {
           message: {
             content: JSON.stringify({
               translation: 'Hello',
-              suggestions: ['S1', 'S2', 'S3', 'S4', 'S5'],
+              suggestions: makePairs(5),
             }),
           },
         }],
@@ -168,6 +196,21 @@ describe('AIProcessor.processOnline', () => {
     const processor = new AIProcessor('sk-test', makeNetwork(true))
     const result = await processor.processOnline('Hola', [])
     expect(result.suggestions).toHaveLength(3)
+
+    globalThis.fetch = originalFetch
+  })
+
+  it('each suggestion pair has non-empty english and spanish', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = mockFetchWith(makePairs(3), 'Test')
+
+    const processor = new AIProcessor('sk-test', makeNetwork(true))
+    const result = await processor.processOnline('Hola', [])
+
+    result.suggestions.forEach((p) => {
+      expect(p.english).toBeTruthy()
+      expect(p.spanish).toBeTruthy()
+    })
 
     globalThis.fetch = originalFetch
   })

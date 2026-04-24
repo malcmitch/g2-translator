@@ -1,9 +1,19 @@
 // src/types.ts
 // Shared types across the translation pipeline
 
+/**
+ * A bilingual suggestion pair.
+ * Both sides shown on the G2 lens: Malcolm reads the English to decide,
+ * then the Spanish is spoken (or he reads it aloud) when selected.
+ */
+export interface SuggestionPair {
+  english: string  // Short English gloss — "Sure, one moment" (max ~6 words)
+  spanish: string  // Spoken/displayed Spanish reply (max ~8 words)
+}
+
 export interface PipelineResult {
-  translation: string   // English: what they said
-  suggestions: string[] // Spanish: 2-3 reply options
+  translation: string           // English: what they said
+  suggestions: SuggestionPair[] // Bilingual reply options
   isOffline: boolean
   /** Raw utterance that triggered this result — used for regeneration */
   sourceUtterance?: string

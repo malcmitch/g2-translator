@@ -110,13 +110,13 @@ export class TranslationPipeline {
    * Phone speaks it via TTS; the selection is recorded in history.
    */
   private onSuggestionSelected(index: number): void {
-    const suggestion = this.lastResult?.suggestions[index]
-    if (!suggestion) return
+    const pair = this.lastResult?.suggestions[index]
+    if (!pair) return
 
     this.selectedIndex = index
 
-    // Speak the suggestion — fire and forget; update UI status via callback
-    this.speakSuggestion(suggestion).catch((err) => {
+    // Speak the Spanish — fire and forget; update UI status via callback
+    this.speakSuggestion(pair.spanish).catch((err) => {
       console.error('[TranslationPipeline] TTS error:', err)
       this.onSpeakingChange?.(false)
     })
@@ -124,8 +124,8 @@ export class TranslationPipeline {
     // Record in history immediately (don't wait for TTS to finish)
     this.addToHistory({
       speakerIsUser:  true,
-      originalText:   suggestion,
-      translatedText: suggestion,
+      originalText:   pair.spanish,
+      translatedText: pair.english,
     })
   }
 
@@ -143,10 +143,11 @@ export class TranslationPipeline {
    */
   private onRegenerateRequested(): void {
     const source      = this.lastResult?.sourceUtterance
-    const prevSuggest = this.lastResult?.suggestions ?? []
+    const prevPairs   = this.lastResult?.suggestions ?? []
     if (!source) return
 
-    this.regenerateSuggestions(source, prevSuggest).catch((err) => {
+    const prevSpanish = prevPairs.map((p) => p.spanish)
+    this.regenerateSuggestions(source, prevSpanish).catch((err) => {
       console.error('[TranslationPipeline] Regenerate error:', err)
     })
   }

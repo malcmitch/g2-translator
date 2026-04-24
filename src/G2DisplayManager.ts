@@ -1,6 +1,20 @@
 // src/G2DisplayManager.ts
-// Pushes translation + suggestions to Even Realities G2 lens
+// Pushes translation + bilingual suggestions to Even Realities G2 lens
 // Uses @evenrealities/even_hub_sdk — verified against SDK v0.0.10 type definitions
+//
+// Lens list layout (3 suggestions = 8 items total):
+//   "  Sure, one moment"         ← English label (index 0) — tapping speaks suggestion 0
+//   "1 Un momento, por favor"    ← Spanish (index 1)        — tapping speaks suggestion 0
+//   "  I need to review it"      ← English label (index 2) — tapping speaks suggestion 1
+//   "2 Necesito revisarlo"       ← Spanish (index 3)        — tapping speaks suggestion 1
+//   "  We can change that"       ← English label (index 4) — tapping speaks suggestion 2
+//   "3 Podemos modificar eso"    ← Spanish (index 5)        — tapping speaks suggestion 2
+//   "↻  More options"            ← action (index 6)
+//   "✏  Type reply"              ← action (index 7)
+//
+// Tap routing: index < pairCount*2 → Math.floor(index/2) = suggestion index
+//              index === pairCount*2   → regenerate
+//              index === pairCount*2+1 → type reply
 
 import {
   EvenAppBridge,
@@ -15,15 +29,13 @@ import {
   type EvenHubEvent,
   List_ItemEvent,
 } from '@evenrealities/even_hub_sdk'
-import type { PipelineResult } from './types.js'
+import type { PipelineResult, SuggestionPair } from './types.js'
 
-// Stable container IDs — used for in-place updates
 const CONTAINER_ID = {
   TRANSLATION: 1,
   SUGGESTIONS: 2,
 } as const
 
-// Fixed action items always appended after suggestions
 const ACTION_ITEMS = {
   REGEN: '↻  More options',
   TYPE:  '✏  Type reply',
@@ -39,8 +51,8 @@ export class G2DisplayManager {
   private onSuggestionSelect?: SuggestionSelectHandler
   private onRegenerateRequest?: RegenerateRequestHandler
   private onTypeReplyRequest?: TypeReplyRequestHandler
-  /** Tracks how many real suggestions are in the current list */
-  private currentSuggestionCount = 0
+  /** Number of suggestion pairs currently in the list (max 3) */
+  private currentPairCount = 0
 
   constructor(bridge?: EvenAppBridge) {
     this.bridge = bridge ?? EvenAppBridge.getInstance()
@@ -48,9 +60,6 @@ export class G2DisplayManager {
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  /**
-   * Call once on app start — sets up the lens layout and wires event listeners.
-   */
   async init(
     onSuggestionSelect?: SuggestionSelectHandler,
     onRegenerateRequest?: RegenerateRequestHandler,
@@ -80,7 +89,7 @@ export class G2DisplayManager {
           xPosition: 0,
           yPosition: 50,
           width: 488,
-          height: 120,
+          height: 140,
           isEventCapture: 1,
           itemContainer: new ListItemContainerProperty({
             itemCount: 2,
@@ -98,11 +107,6 @@ export class G2DisplayManager {
 
   // ── Update lens content ───────────────────────────────────────────────────
 
-  /**
-   * Push a full pipeline result to the lens.
-   * Uses textContainerUpgrade (fast) for translation text.
-   * Uses rebuildPageContainer for the suggestions list (required by SDK for list updates).
-   */
   async show(result: PipelineResult): Promise<void> {
     if (!this.initialized) await this.init()
     await Promise.all([
@@ -134,16 +138,26 @@ export class G2DisplayManager {
     )
   }
 
-  private async updateSuggestions(suggestions: string[]): Promise<void> {
+  /**
+   * Builds the interleaved English/Spanish list:
+   *   [English label, Spanish item, English label, Spanish item, …, ↻, ✏]
+   *
+   * Both the English line and the Spanish line for a suggestion share the
+   * same logical index (floor(tapIndex / 2)), so either line can be tapped
+   * to select that suggestion.
+   */
+  private async updateSuggestions(suggestions: SuggestionPair[]): Promise<void> {
     const capped = suggestions.slice(0, 3)
-    this.currentSuggestionCount = capped.length
+    this.currentPairCount = capped.length
 
-    // Suggestion items: "1  text", "2  text", ...
-    const suggestionItems = capped.map((s, i) => `${i + 1}  ${truncate(s, 26)}`)
-    // Always append the two action items
-    const allItems = [...suggestionItems, ACTION_ITEMS.REGEN, ACTION_ITEMS.TYPE]
+    const pairItems: string[] = []
+    capped.forEach((pair, i) => {
+      pairItems.push(`  ${truncate(pair.english, 28)}`)          // English label (no number)
+      pairItems.push(`${i + 1} ${truncate(pair.spanish, 26)}`)   // Numbered Spanish
+    })
 
-    // List updates require rebuildPageContainer (textContainerUpgrade is text-only)
+    const allItems = [...pairItems, ACTION_ITEMS.REGEN, ACTION_ITEMS.TYPE]
+
     await this.bridge.rebuildPageContainer(
       new RebuildPageContainer({
         containerTotalNum: 2,
@@ -154,7 +168,7 @@ export class G2DisplayManager {
             xPosition: 0,
             yPosition: 50,
             width: 488,
-            height: 120,
+            height: 140,
             isEventCapture: 1,
             itemContainer: new ListItemContainerProperty({
               itemCount: allItems.length,
@@ -170,12 +184,6 @@ export class G2DisplayManager {
 
   // ── G2 hardware event listener ────────────────────────────────────────────
 
-  /**
-   * Routes tap events from the glasses list:
-   *   index < currentSuggestionCount  →  user wants to use that suggestion
-   *   index === currentSuggestionCount     →  ↻ More options
-   *   index === currentSuggestionCount + 1 →  ✏ Type reply
-   */
   private listenForGlassesEvents(): void {
     if (typeof document === 'undefined') return
 
@@ -197,15 +205,22 @@ export class G2DisplayManager {
     })
   }
 
+  /**
+   * Tap routing with interleaved pair layout:
+   *   Pairs occupy indices 0..(pairCount*2 - 1)
+   *   Tapping either English (even) or Spanish (odd) within a pair → same suggestion
+   *   Regen = pairCount*2
+   *   Type  = pairCount*2 + 1
+   */
   private routeTap(index: number, name: string): void {
-    const regenIndex = this.currentSuggestionCount
-    const typeIndex  = this.currentSuggestionCount + 1
+    const actionStart = this.currentPairCount * 2
 
-    if (index < this.currentSuggestionCount) {
-      this.onSuggestionSelect?.(index, name)
-    } else if (index === regenIndex) {
+    if (index < actionStart) {
+      const suggestionIndex = Math.floor(index / 2)
+      this.onSuggestionSelect?.(suggestionIndex, name)
+    } else if (index === actionStart) {
       this.onRegenerateRequest?.()
-    } else if (index === typeIndex) {
+    } else if (index === actionStart + 1) {
       this.onTypeReplyRequest?.()
     }
   }

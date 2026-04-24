@@ -1,8 +1,8 @@
 // src/AIProcessor.ts
-// Online: single GPT-4o call → translation + 3 Spanish suggestions (JSON)
-// Offline: placeholder translation + TemplateSuggestionEngine suggestions
+// Online: single GPT-4o call → translation + 3 bilingual suggestion pairs (JSON)
+// Offline: placeholder translation + TemplateSuggestionEngine bilingual pairs
 
-import type { PipelineResult, ConversationTurn } from './types.js'
+import type { PipelineResult, ConversationTurn, SuggestionPair } from './types.js'
 import { TemplateSuggestionEngine } from './TemplateSuggestionEngine.js'
 import { NetworkMonitor } from './NetworkMonitor.js'
 
@@ -14,7 +14,7 @@ interface OpenAIResponse { choices: OpenAIChoice[] }
 
 interface ProcessedResult {
   translation: string
-  suggestions: string[]
+  suggestions: SuggestionPair[]
 }
 
 export class AIProcessor {
@@ -41,16 +41,16 @@ export class AIProcessor {
 
   /**
    * Re-run suggestion generation for the same utterance, explicitly
-   * excluding previously shown suggestions so the user gets fresh options.
+   * excluding previously shown Spanish phrases so the user gets fresh options.
    */
   async regenerate(
     spokenSpanish: string,
     history: ConversationTurn[],
-    excludeSuggestions: string[],
+    excludeSpanish: string[],
   ): Promise<PipelineResult> {
     if (this.network.isOnline && this.apiKey) {
       try {
-        const result = await this.processOnline(spokenSpanish, history, excludeSuggestions)
+        const result = await this.processOnline(spokenSpanish, history, excludeSpanish)
         return { ...result, isOffline: false, sourceUtterance: spokenSpanish }
       } catch (err) {
         console.warn('[AIProcessor] Regenerate failed, falling back offline:', err)
@@ -99,7 +99,7 @@ export class AIProcessor {
   async processOnline(
     spokenSpanish: string,
     history: ConversationTurn[],
-    excludeSuggestions: string[] = [],
+    excludeSpanish: string[] = [],
   ): Promise<ProcessedResult> {
     const historyContext = history
       .slice(-4)
@@ -112,12 +112,20 @@ export class AIProcessor {
 
     const systemPrompt = [
       'You are a real-time translation assistant for an English speaker in a Spanish conversation.',
+      'The user cannot read Spanish — every suggestion MUST include a short English gloss so they know what it means.',
       'Return ONLY valid JSON matching this shape exactly:',
-      '{ "translation": "<English, max 12 words>", "suggestions": ["<Spanish 1, max 8 words>", "<Spanish 2, max 8 words>", "<Spanish 3, max 8 words>"] }',
-      'Suggestions must be natural, contextually varied, and display-safe (no special chars).',
-      'Word limits are strict — text renders on smart glasses lens.',
-      excludeSuggestions.length > 0
-        ? `Do NOT repeat these previous suggestions: ${excludeSuggestions.map((s) => `"${s}"`).join(', ')}. Generate entirely different options.`
+      JSON.stringify({
+        translation: '<English translation, max 12 words>',
+        suggestions: [
+          { english: '<English gloss, max 6 words>', spanish: '<Spanish reply, max 8 words>' },
+          { english: '<English gloss, max 6 words>', spanish: '<Spanish reply, max 8 words>' },
+          { english: '<English gloss, max 6 words>', spanish: '<Spanish reply, max 8 words>' },
+        ],
+      }),
+      'Suggestions must be naturally varied, contextually appropriate, and display-safe (no special chars).',
+      'Word limits are strict — both lines render on smart glasses lens.',
+      excludeSpanish.length > 0
+        ? `Do NOT repeat these Spanish phrases: ${excludeSpanish.map((s) => `"${s}"`).join(', ')}. Generate entirely different options.`
         : '',
     ].filter(Boolean).join('\n')
 
@@ -150,10 +158,17 @@ export class AIProcessor {
 
     const data = (await res.json()) as OpenAIResponse
     const content = data.choices?.[0]?.message?.content ?? '{}'
-    const parsed = JSON.parse(content) as { translation?: string; suggestions?: string[] }
+    const parsed = JSON.parse(content) as {
+      translation?: string
+      suggestions?: Array<{ english?: string; spanish?: string }>
+    }
 
     const translation = parsed.translation ?? '...'
-    const suggestions = (parsed.suggestions ?? []).slice(0, 3)
+    const raw = parsed.suggestions ?? []
+    const suggestions: SuggestionPair[] = raw
+      .slice(0, 3)
+      .map((s) => ({ english: s.english ?? '', spanish: s.spanish ?? '' }))
+      .filter((s) => s.english && s.spanish)
 
     if (!translation || suggestions.length === 0) throw new Error('Invalid response shape')
 
@@ -164,8 +179,6 @@ export class AIProcessor {
 
   processOffline(spokenSpanish: string): PipelineResult {
     const suggestions = this.templateEngine.suggest(spokenSpanish)
-    // Translation is unavailable without network in this offline mode.
-    // Apple Translation framework wires in via the SwiftUI host — see docs/sdk-architecture-note.md
     return {
       translation: '(Translation unavailable offline)',
       suggestions,

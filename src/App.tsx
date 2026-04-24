@@ -126,10 +126,13 @@ export function App({ pipeline, apiKey }: AppProps) {
           <div style={{ ...styles.cardLabel, marginTop: 8 }}>
             Suggestions on lens
           </div>
-          {lastResult.suggestions.map((s, i) => (
+          {lastResult.suggestions.map((pair, i) => (
             <div key={i} style={styles.suggestion}>
               <span style={styles.suggestionNum}>{i + 1}</span>
-              <span>{s}</span>
+              <span style={styles.suggestionTexts}>
+                <span style={styles.suggestionEnglish}>{pair.english}</span>
+                <span style={styles.suggestionSpanish}>{pair.spanish}</span>
+              </span>
               <span style={styles.suggestionHint}>tap → speak</span>
             </div>
           ))}
@@ -306,6 +309,21 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '10px 12px',
     fontSize: 15,
     color: '#e0e0e0',
+  },
+  suggestionTexts: {
+    flex: 1,
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 2,
+  },
+  suggestionEnglish: {
+    fontSize: 14,
+    color: '#e0e0e0',
+    fontWeight: 500,
+  },
+  suggestionSpanish: {
+    fontSize: 12,
+    color: '#666',
   },
   suggestionNum: {
     width: 22,
