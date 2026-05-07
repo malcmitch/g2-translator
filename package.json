@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 3000",
+    "dev:store": "vite --port 3001 --open /appstore.html",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "sim": "evenhub-simulator http://localhost:3000",
-    "qr": "evenhub qr --port 3000"
+    "sim:store": "evenhub-simulator http://localhost:3001/appstore.html",
+    "qr": "evenhub qr --port 3000",
+    "qr:store": "evenhub qr --port 3001 --path /appstore.html"
   },
   "dependencies": {
     "@evenrealities/even_hub_sdk": "^0.0.10",

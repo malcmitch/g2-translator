@@ -1,0 +1,21 @@
+{
+  "package_id": "com.malcmitch.evenhubstore",
+  "edition": "202601",
+  "name": "Even Hub Store",
+  "version": "0.1.0",
+  "min_app_version": "2.0.0",
+  "min_sdk_version": "0.0.7",
+  "entrypoint": "appstore.html",
+  "permissions": [
+    {
+      "name": "network",
+      "desc": "Needed to fetch app listings and install packages from the Even Hub App Store.",
+      "whitelist": [
+        "https://hub.evenrealities.com"
+      ]
+    }
+  ],
+  "supported_languages": [
+    "en"
+  ]
+}

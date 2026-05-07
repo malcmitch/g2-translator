@@ -1,13 +1,17 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { resolve } from 'path'
 
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
   build: {
     outDir: 'dist',
-    // Keep bundle single-file friendly for Even Hub WebView loading
     rollupOptions: {
+      input: {
+        translator: resolve(__dirname, 'index.html'),
+        appstore:   resolve(__dirname, 'appstore.html'),
+      },
       output: {
         manualChunks: undefined,
       },
