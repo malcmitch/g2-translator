@@ -11,6 +11,24 @@ const WHISPER_ENDPOINT = 'https://api.openai.com/v1/audio/transcriptions'
 const SILENCE_THRESHOLD_MS = 1500  // stop recording after 1.5s silence
 const MAX_CHUNK_MS = 10_000        // max recording chunk before forced upload
 
+// Reject subtitle/CC metadata and other non-speech junk from Whisper
+const JUNK_PATTERNS = [
+  /\bsubtitles?\b.*\b(by|from)\b/i,
+  /\bcc\b.*\bby\b/i,
+  /\bclosed\s*caption/i,
+  /\bamara\.org\b/i,
+  /\btranscri(bed|ption)\b.*\bby\b/i,
+  /\btranslat(ed|ion)\b.*\bby\b/i,
+  /\bsubs\b.*\bby\b/i,
+  /^\s*\.+\s*$/,              // just dots/ellipses
+  /^\s*\[.*\]\s*$/,           // [Music], [Applause], etc.
+  /^\s*\(.*\)\s*$/,           // (inaudible), (music), etc.
+]
+
+export function isJunkTranscript(text: string): boolean {
+  return JUNK_PATTERNS.some((re) => re.test(text))
+}
+
 export class SpeechService {
   private apiKey: string
   private network: NetworkMonitor
@@ -21,6 +39,9 @@ export class SpeechService {
   private silenceTimer?: ReturnType<typeof setTimeout>
   private isListening = false
   private onTranscript?: TranscriptHandler
+  private analyser?: AnalyserNode
+  private audioCtx?: AudioContext
+  private hasSpeechEnergy = false
 
   constructor(apiKey?: string, network?: NetworkMonitor) {
     this.apiKey = apiKey ?? (typeof process !== 'undefined' ? process.env.OPENAI_API_KEY ?? '' : '')
@@ -44,8 +65,12 @@ export class SpeechService {
   stop(): void {
     this.isListening = false
     clearTimeout(this.silenceTimer)
+    clearInterval(this.energyMonitorId)
     this.mediaRecorder?.stop()
     this.speechRecognition?.stop()
+    this.audioCtx?.close()
+    this.audioCtx = undefined
+    this.analyser = undefined
   }
 
   // ── Whisper (Online) ───────────────────────────────────────────────────────
@@ -60,6 +85,15 @@ export class SpeechService {
       return
     }
 
+    // Set up audio energy detection to avoid sending silence to Whisper
+    this.audioCtx = new AudioContext()
+    const source = this.audioCtx.createMediaStreamSource(stream)
+    this.analyser = this.audioCtx.createAnalyser()
+    this.analyser.fftSize = 512
+    source.connect(this.analyser)
+    this.hasSpeechEnergy = false
+    this.startEnergyMonitor()
+
     const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4'
     this.mediaRecorder = new MediaRecorder(stream, { mimeType })
     this.chunks = []
@@ -70,9 +104,15 @@ export class SpeechService {
     }
 
     this.mediaRecorder.onstop = async () => {
-      if (this.chunks.length === 0) return
+      if (this.chunks.length === 0 || !this.hasSpeechEnergy) {
+        this.chunks = []
+        this.hasSpeechEnergy = false
+        if (this.isListening) await this.startWhisper(language)
+        return
+      }
       const blob = new Blob(this.chunks, { type: mimeType })
       this.chunks = []
+      this.hasSpeechEnergy = false
       await this.uploadToWhisper(blob, language)
       // Auto-restart listening after each utterance
       if (this.isListening) await this.startWhisper(language)
@@ -80,6 +120,21 @@ export class SpeechService {
 
     this.mediaRecorder.start(250) // collect data every 250ms
     this.resetSilenceTimer()
+  }
+
+  private energyMonitorId?: ReturnType<typeof setInterval>
+  private static readonly ENERGY_THRESHOLD = 0.01 // RMS threshold — below this is silence
+
+  private startEnergyMonitor(): void {
+    this.energyMonitorId = setInterval(() => {
+      if (!this.analyser) return
+      const data = new Float32Array(this.analyser.fftSize)
+      this.analyser.getFloatTimeDomainData(data)
+      let sum = 0
+      for (let i = 0; i < data.length; i++) sum += data[i] * data[i]
+      const rms = Math.sqrt(sum / data.length)
+      if (rms > SpeechService.ENERGY_THRESHOLD) this.hasSpeechEnergy = true
+    }, 100)
   }
 
   private resetSilenceTimer(): void {
@@ -104,7 +159,7 @@ export class SpeechService {
       if (!res.ok) throw new Error(`Whisper error: ${res.status}`)
       const data = (await res.json()) as { text: string }
       const text = data.text?.trim()
-      if (text) this.onTranscript?.(text)
+      if (text && !isJunkTranscript(text)) this.onTranscript?.(text)
     } catch (err) {
       console.error('[SpeechService] Whisper upload failed:', err)
     }
@@ -132,7 +187,7 @@ export class SpeechService {
 
     this.speechRecognition.onresult = (e: any) => {
       const text = e.results[0]?.[0]?.transcript?.trim()
-      if (text) this.onTranscript?.(text)
+      if (text && !isJunkTranscript(text)) this.onTranscript?.(text)
     }
 
     this.speechRecognition.onend = () => {
